@@ -1,4 +1,4 @@
-require("./database/db");
+require("./database/db");   // DynamoDB bootstrap (was MongoDB/Mongoose)
 
 const express = require("express");
 const cors = require("cors");
@@ -13,7 +13,7 @@ app.use(express.json());
 
 // HOME ROUTE
 app.get("/", (req, res) => {
-    res.send("Smart Hotel Backend Running");
+    res.send("Smart Hotel Backend Running (DynamoDB)");
 });
 
 

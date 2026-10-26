@@ -1,8 +1,13 @@
-const mongoose = require("mongoose");
-const Booking = require("../models/Booking");
-const Room = require("../models/Room");
+/**
+ * controllers/bookingController.js  –  DynamoDB version
+ * All Mongoose queries replaced with DynamoDB Booking + Room model helpers.
+ * API routes and response shapes are unchanged.
+ */
 
-// CREATE BOOKING IN MONGODB
+const BookingModel = require("../models/Booking");
+const RoomModel = require("../models/Room");
+
+// ─── CREATE BOOKING ────────────────────────────────────────────────────────
 exports.createBooking = async (req, res) => {
   try {
     const { guest_name, email, room_id, check_in, check_out } = req.body;
@@ -11,22 +16,12 @@ exports.createBooking = async (req, res) => {
       return res.status(400).json({ message: "All booking fields are required." });
     }
 
-    // Check dates
     if (check_in >= check_out) {
-      return res.status(400).json({
-        message: "Check-out date must be strictly after check-in date"
-      });
+      return res.status(400).json({ message: "Check-out date must be strictly after check-in date" });
     }
 
-    // Find room by ObjectId or room_number
-    let room = null;
-    if (mongoose.Types.ObjectId.isValid(room_id)) {
-      room = await Room.findById(room_id);
-    }
-    if (!room && !isNaN(Number(room_id))) {
-      room = await Room.findOne({ room_number: Number(room_id) });
-    }
-
+    // Find room by roomId (= String(room_number)) or numeric room_number
+    const room = await RoomModel.findById(room_id);
     if (!room) {
       return res.status(404).json({ message: "Room not found in database" });
     }
@@ -35,24 +30,37 @@ exports.createBooking = async (req, res) => {
       return res.status(400).json({ message: "Room is not available for booking" });
     }
 
-    // Create Booking
-    const newBooking = await Booking.create({
+    // Create booking — store denormalized room fields so GET /bookings is fast
+    const newBooking = await BookingModel.createBooking({
       guest_name,
       email,
-      room_id: room._id,
+      roomId: room.roomId,
+      room_number: room.room_number,
+      room_type: room.room_type,
+      price: room.price,
       check_in,
-      check_out,
-      status: "Confirmed"
+      check_out
     });
 
-    // Update room status to Booked
-    room.status = "Booked";
-    await room.save();
+    // Mark room as Booked
+    await RoomModel.updateRoomStatus(room.roomId, "Booked");
 
     res.status(201).json({
-      message: "Booking created successfully in MongoDB",
-      booking_id: newBooking._id,
-      booking: newBooking
+      message: "Booking created successfully in DynamoDB",
+      booking_id: newBooking.bookingId,
+      booking: {
+        id: newBooking.bookingId,
+        _id: newBooking.bookingId,
+        guest_name: newBooking.guest_name,
+        email: newBooking.email,
+        room_id: newBooking.roomId,
+        room_number: newBooking.room_number,
+        room_type: newBooking.room_type,
+        price: newBooking.price,
+        check_in: newBooking.check_in,
+        check_out: newBooking.check_out,
+        status: newBooking.status
+      }
     });
   } catch (error) {
     console.error("Error in createBooking:", error);
@@ -60,123 +68,87 @@ exports.createBooking = async (req, res) => {
   }
 };
 
-// GET ALL BOOKINGS FROM MONGODB
+// ─── GET ALL BOOKINGS ──────────────────────────────────────────────────────
 exports.getBookings = async (req, res) => {
   try {
-    const bookings = await Booking.find().populate("room_id").sort({ createdAt: -1 });
-
-    // Format for 100% frontend compatibility (flat fields like MySQL JOIN)
-    const formattedBookings = bookings.map((b) => {
-      const room = b.room_id || {};
-      return {
-        id: b._id.toString(),
-        _id: b._id.toString(),
-        guest_name: b.guest_name,
-        email: b.email,
-        room_id: room._id ? room._id.toString() : b.room_id?.toString(),
-        room_number: room.room_number || "N/A",
-        room_type: room.room_type || "Deluxe",
-        price: room.price || 0,
-        check_in: b.check_in,
-        check_out: b.check_out,
-        status: b.status
-      };
-    });
-
-    res.json(formattedBookings);
+    const bookings = await BookingModel.findAll();
+    res.json(bookings);
   } catch (error) {
     console.error("Error in getBookings:", error);
     res.status(500).json({ message: "Failed to fetch bookings", error: error.message });
   }
 };
 
-// GET SINGLE BOOKING
+// ─── GET SINGLE BOOKING ────────────────────────────────────────────────────
 exports.getBookingById = async (req, res) => {
   try {
     const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: "Invalid booking ID" });
-    }
+    const booking = await BookingModel.findById(id);
 
-    const booking = await Booking.findById(id).populate("room_id");
     if (!booking) {
       return res.status(404).json({ message: "Booking not found" });
     }
 
-    const room = booking.room_id || {};
-    res.json({
-      id: booking._id.toString(),
-      _id: booking._id.toString(),
-      guest_name: booking.guest_name,
-      email: booking.email,
-      room_id: room._id ? room._id.toString() : booking.room_id?.toString(),
-      room_number: room.room_number || "N/A",
-      room_type: room.room_type || "Deluxe",
-      price: room.price || 0,
-      check_in: booking.check_in,
-      check_out: booking.check_out,
-      status: booking.status
-    });
+    res.json(booking);
   } catch (error) {
     console.error("Error in getBookingById:", error);
     res.status(500).json({ message: "Failed to fetch booking", error: error.message });
   }
 };
 
-// UPDATE BOOKING STATUS
+// ─── UPDATE BOOKING STATUS ─────────────────────────────────────────────────
 exports.updateBooking = async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: "Invalid booking ID" });
+    let updatedBooking;
+    try {
+      updatedBooking = await BookingModel.updateBookingStatus(id, status);
+    } catch (condErr) {
+      if (condErr.name === "ConditionalCheckFailedException") {
+        return res.status(404).json({ message: "Booking not found" });
+      }
+      throw condErr;
     }
 
-    const booking = await Booking.findById(id);
-    if (!booking) {
-      return res.status(404).json({ message: "Booking not found" });
+    // Keep room status in sync
+    if (updatedBooking?.room_id) {
+      if (status === "Cancelled" || status === "Completed") {
+        await RoomModel.updateRoomStatus(updatedBooking.room_id, "Available");
+      } else if (status === "Confirmed") {
+        await RoomModel.updateRoomStatus(updatedBooking.room_id, "Booked");
+      }
     }
 
-    booking.status = status;
-    await booking.save();
-
-    // If cancelled or completed, free up the room
-    if ((status === "Cancelled" || status === "Completed") && booking.room_id) {
-      await Room.findByIdAndUpdate(booking.room_id, { status: "Available" });
-    } else if (status === "Confirmed" && booking.room_id) {
-      await Room.findByIdAndUpdate(booking.room_id, { status: "Booked" });
-    }
-
-    res.json({
-      message: "Booking updated successfully in MongoDB",
-      booking
-    });
+    res.json({ message: "Booking updated successfully in DynamoDB", booking: updatedBooking });
   } catch (error) {
     console.error("Error in updateBooking:", error);
     res.status(500).json({ message: "Failed to update booking", error: error.message });
   }
 };
 
-// DELETE BOOKING
+// ─── DELETE BOOKING ────────────────────────────────────────────────────────
 exports.deleteBooking = async (req, res) => {
   try {
     const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: "Invalid booking ID" });
+
+    let deleted;
+    try {
+      deleted = await BookingModel.deleteBooking(id);
+    } catch (condErr) {
+      if (condErr.name === "ConditionalCheckFailedException") {
+        return res.status(404).json({ message: "Booking not found to delete" });
+      }
+      throw condErr;
     }
 
-    const booking = await Booking.findByIdAndDelete(id);
-    if (!booking) {
-      return res.status(404).json({ message: "Booking not found to delete" });
+    // Free up the room if booking was active
+    if (deleted?.roomId && deleted?.status !== "Cancelled") {
+      await RoomModel.updateRoomStatus(deleted.roomId, "Available");
     }
 
-    // Free up room if booking is deleted
-    if (booking.room_id && booking.status !== "Cancelled") {
-      await Room.findByIdAndUpdate(booking.room_id, { status: "Available" });
-    }
-
-    res.json({ message: "Booking deleted successfully from MongoDB" });
+    res.json({ message: "Booking deleted successfully from DynamoDB" });
   } catch (error) {
     console.error("Error in deleteBooking:", error);
     res.status(500).json({ message: "Failed to delete booking", error: error.message });
