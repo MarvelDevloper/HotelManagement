@@ -20,7 +20,7 @@ import { IconSearch, IconBed } from "./components/Icons";
 // Default Data & Constants
 import { DEFAULT_FALLBACK_ROOMS } from "./data/roomData";
 
-const INITIAL_API = localStorage.getItem("aura_hotel_api") || "http://localhost:5000/api";
+const INITIAL_API = localStorage.getItem("aura_hotel_api") || "http://52.90.104.109:5000/api";
 
 function App() {
   const [apiEndpoint, setApiEndpoint] = useState(INITIAL_API);
